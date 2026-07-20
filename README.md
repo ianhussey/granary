@@ -259,4 +259,11 @@ Hussey, I. (2026). Granary: A very large item-level open dataset of psychologica
 
 ## Licensing
 
-The source datasets carry different licenses (CC0, CC BY 4.0, and CC BY-NC-SA 4.0, as listed per source above). The combined dataset is a derivative that includes the Brysbaert corpus, so redistribution of the combined product must honour the most restrictive terms in the mix, i.e., CC BY-NC-SA 4.0: attribute the creators, non-commercial use only, and share derivatives under the same license. If you need broader terms, work only with the individual sources whose licenses permit it (e.g. the CC0 AIID data).
+(c) Ian Hussey (2026)
+
+All code is MIT licensed.
+
+All text and images are CC-BY 4.0 (see above suggested citation).
+
+Licensing of data varies by source dataset. The source datasets carry different licenses (CC0, CC BY 4.0, and CC BY-NC-SA 4.0, as listed per source above). The combined dataset is a derivative that includes the Brysbaert corpus, so redistribution of the combined product must honour the most restrictive terms in the mix, i.e., **CC BY-NC-SA 4.0**: attribute the creators, non-commercial use only, and share derivatives under the same license. Citations for the individual datasets are above. If you need broader terms, work only with the individual sources whose licenses permit it (e.g. the CC0 AIID data).
+
