@@ -122,7 +122,7 @@ Each source is processed independently under `code/processing/<source>/` into a 
 |---|---|---|
 | `data_processed_itemlevel.parquet` | one row per (participant, scale, item) response — the harmonised long format below | `codebook_itemlevel.xlsx` |
 | `data_processed_participantlevel.parquet` | one row per (participant, scale, source): mean-projected sum score, POMP score, and Smithson-Verkuilen-transformed POMP score | `codebook_participantlevel.xlsx` |
-| `data_processed_scalelevel.parquet` | one row per (scale, source): n, Cronbach's alpha, logical/empirical min–max, mean, SD, skew, kurtosis, and POMP mean/SD (incl. proportion of the Bhattacharyya-Davis max SD) | `codebook_scalelevel.xlsx` |
+| `data_processed_scalelevel.parquet` | one row per (scale, source): n, Cronbach's alpha, logical/empirical min–max, mean, SD, skew, kurtosis, and POMP mean/SD (incl. proportion of the Bhatia-Davis, 2000, max SD) | `codebook_scalelevel.xlsx` |
 
 Approximate sizes: item-level ~5.80M rows, participant-level ~488,400 rows, scale-level 419 rows (202 of which are single-item scales, whose alpha is `NA`).
 
