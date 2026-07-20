@@ -8,6 +8,7 @@ format:
     toc: true
     toc-location: left
     theme: flatly
+    embed-resources: true
 ---
 
 ```{r, include=FALSE}
@@ -29,7 +30,7 @@ library(psych)    # Cronbach's alpha, skew, kurtosis
 library(writexl)  # xlsx codebooks
 
 # Population (n-denominator) SD. Paired with the population Popoviciu /
-# Bhattacharyya-Davis max-SD bounds when forming pomp_sd_* ratios, so the ratio
+# Bhatia-Davis (2000) max-SD bounds when forming pomp_sd_* ratios, so the ratio
 # is bounded by 1 even at small n; base R's sd() uses (n-1), which would inflate
 # the ratio by sqrt(n/(n-1)). Returns NA for < 2 observations.
 sd_pop <- function(x) {
@@ -147,12 +148,7 @@ tibble(records_before = n_before,
 
 ## Sum scores
 
-One row per (participant, scale, source). Each participant is scored as their
-*mean* answered item projected to the full scale length (`mean_response *
-n_items`), so partial responders (>= 80% of items, per the completeness filter)
-are projected to the full-scale total rather than under-counted by a raw sum.
-For complete responders this equals the raw sum. `n_items` is the median
-answered item count per (scale, source), reused from the completeness filter.
+One row per (participant, scale, source). Each participant is scored as their *mean* answered item projected to the full scale length (`mean_response * n_items`), so partial responders (>= 80% of items, per the completeness filter) are projected to the full-scale total rather than under-counted by a raw sum. For complete responders this equals the raw sum. `n_items` is the median answered item count per (scale, source), reused from the completeness filter.
 
 ```{r}
 
@@ -166,12 +162,7 @@ dat_sumscores <- dat |>
 
 ## POMP scores with Smithson-Verkuilen transformations
 
-`pomp_sumscore` rescales each participant's sum score to [0, 1] as a proportion
-of the scale's logical range (POMP: Percentage Of Maximum Possible).
-`pomp_sumscore_sk_transf` applies the Smithson-Verkuilen (2006) transformation
-`(y*(n-1) + 0.5)/n`, which nudges values off the exact 0/1 limits so the scores
-are admissible for downstream Beta-based modelling; `n` is the number of
-participants for that (scale, source).
+`pomp_sumscore` rescales each participant's sum score to [0, 1] as a proportion of the scale's logical range (POMP: Percentage Of Maximum Possible). `pomp_sumscore_sk_transf` applies the Smithson-Verkuilen (2006) transformation `(y*(n-1) + 0.5)/n`, which nudges values off the exact 0/1 limits so the scores are admissible for downstream Beta-based modelling; `n` is the number of participants for that (scale, source).
 
 ```{r}
 
@@ -205,11 +196,7 @@ Per (scale, source) descriptive statistics.
 
 ## Cronbach's alpha
 
-Internal consistency per (scale, source), computed from the item-level long
-data. Brysbaert items are reverse-keyed upstream in processing and
-Bainbridge/AIID are already correctly keyed, so a plain alpha is meaningful;
-`check.keys = TRUE` is kept only as a safety net. Single-item attitude "scales"
-have < 2 items and get `alpha = NA`.
+Internal consistency per (scale, source), computed from the item-level long data. Brysbaert items are reverse-keyed upstream in processing and Bainbridge/AIID are already correctly keyed, so a plain alpha is meaningful; `check.keys = TRUE` is kept only as a safety net. Single-item attitude "scales" have < 2 items and get `alpha = NA`.
 
 ```{r}
 
@@ -236,14 +223,7 @@ alphas <- dat |>
 
 ## Descriptive statistics
 
-One row per (scale, source): sample size, alpha, the logical (theoretical) and
-empirical min/max of the sum score, its mean, SD, skew and kurtosis, and three
-SD-relative POMP metrics. `pomp_m` = (mean - logical min) / logical range.
-`pomp_sd` = SD / logical range. `pomp_sd_popoviciu` = SD / (range/2), the global
-Popoviciu max-SD bound. `pomp_sd_bd` = SD / sqrt((max - m)(m - min)), the local
-Bhattacharyya-Davis max-SD bound given the observed mean (the "proportion of BD
-max SD"). Population-form SD (`sd_pop`) is used in the POMP ratios so each is
-bounded by 1; the reportable Bessel-corrected `sd` is retained separately.
+One row per (scale, source): sample size, alpha, the logical (theoretical) and empirical min/max of the sum score, its mean, SD, skew and kurtosis, and three SD-relative POMP metrics. `pomp_m` = (mean - logical min) / logical range. `pomp_sd` = SD / logical range. `pomp_sd_popoviciu` = SD / (range/2), the global Popoviciu max-SD bound. `pomp_sd_bd` = SD / sqrt((max - m)(m - min)), the local Bhatia-Davis (2000) max-SD bound given the observed mean (the "proportion of BD max SD"). Population-form SD (`sd_pop`) is used in the POMP ratios so each is bounded by 1; the reportable Bessel-corrected `sd` is retained separately.
 
 ```{r}
 
@@ -262,7 +242,7 @@ dat_scalelevel <- dat_participantlevel |>
   mutate(logical_min = min_response * n_items,
          logical_max = max_response * n_items,
          max_range   = logical_max - logical_min,
-         # Local Bhattacharyya-Davis max-SD bound given the observed mean.
+         # Local Bhatia-Davis (2000) max-SD bound given the observed mean.
          max_sd_bd   = sqrt((logical_max - m) * (m - logical_min)),
          pomp_m            = (m - logical_min) / max_range,
          pomp_sd           = sd_pop / max_range,
@@ -303,11 +283,7 @@ write_parquet(dat_scalelevel,
 
 # Codebooks
 
-An xlsx codebook is written alongside each parquet file, listing every column
-with its class and a description. The descriptions are maintained in the named
-vectors below; `build_codebook()` fails loudly if a saved data frame contains a
-column with no description, so the codebooks cannot silently drift out of sync
-with the data.
+An xlsx codebook is written alongside each parquet file, listing every column with its class and a description. The descriptions are maintained in the named vectors below; `build_codebook()` fails loudly if a saved data frame contains a column with no description, so the codebooks cannot silently drift out of sync with the data.
 
 ```{r}
 
@@ -375,11 +351,11 @@ descriptions_scalelevel <- c(
   logical_min       = "Theoretical minimum possible sum score (min_response * n_items).",
   logical_max       = "Theoretical maximum possible sum score (max_response * n_items).",
   max_range         = "Logical sum-score range (logical_max - logical_min).",
-  max_sd_bd         = "Local Bhattacharyya-Davis max-SD bound given the mean: sqrt((logical_max - m)(m - logical_min)).",
+  max_sd_bd         = "Local Bhatia-Davis (2000) max-SD bound given the mean: sqrt((logical_max - m)(m - logical_min)).",
   pomp_m            = "POMP mean: (m - logical_min) / max_range.",
   pomp_sd           = "SD / logical range (proportion of max range).",
   pomp_sd_popoviciu = "SD / (range/2): proportion of the global Popoviciu max SD.",
-  pomp_sd_bd        = "SD / max_sd_bd: proportion of the local Bhattacharyya-Davis max SD."
+  pomp_sd_bd        = "SD / max_sd_bd: proportion of the local Bhatia-Davis (2000) max SD."
 )
 
 build_codebook(dat_itemlevel, descriptions_itemlevel,
