@@ -1,0 +1,770 @@
+---
+title: "Parameterising the distribution of factor loadings for simulation"
+author: "Ian Hussey"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  html_document:
+    code_folding: hide
+    highlight: haddock
+    theme: flatly
+    toc: yes
+    toc_float: yes
+---
+
+```{r, include=FALSE}
+knitr::opts_chunk$set(message = FALSE,
+                      warning = FALSE)
+```
+
+# Goal
+
+Simulation studies of psychometric methods need a data-generating process (DGP) for item **factor loadings**. The companion analysis (`analysis_item_correlations_factor_loadings.Rmd`) builds a *hierarchical mixture* DGP that captures between-scale clustering and a discrete "stray" (cross-facet) item component. That model is faithful but has many moving parts (a scale level, a within-scale spread, a stray mixing weight, and a resampling step for scale composition), which makes it awkward to state in a methods section or to reason about analytically.
+
+This file asks a narrower question: **what single, off-the-shelf parametric distribution best describes the pooled distribution of standardized factor loadings**, so a simulation can draw loadings with one line and two or three numbers? A single distribution deliberately ignores the scale-level structure (that is the mixture model's job) and targets the *marginal* distribution of loadings — the quantity a simulation needs when items are drawn i.i.d.
+
+Standardized loadings are bounded on the logical range `[-1, 1]`, are typically concentrated around 0.4-0.7, and have a short left tail crossing into negative values. A distribution for them should respect that bounded, skewed shape. We therefore compare a ladder of candidates, including a **scaled Beta**, obtained by rescaling loadings from their `[-1, 1]` logical range onto the Beta's `[0, 1]` support, and select the best by information criteria and distributional distance.
+
+# Dependencies
+
+```{r}
+
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+library(arrow)
+library(lavaan)
+library(sn)        # skew-normal / skew-t
+library(moments)   # skewness / kurtosis
+
+set.seed(42)
+
+```
+
+# Get data
+
+Trait scales only (Bainbridge, AIID scales, Brysbaert), matching the companion analysis. Attitudes are single-item and have no factor loadings.
+
+```{r}
+
+dat_bainbridge <- read_csv("../../data/bainbridge et al. 2022/processed/data_processed_bainbridge_itemlevel_long.csv")
+
+dat_brysbaert_long <- read_parquet("../../data/brysbaert et al. 2024/processed/data_processed_brysbaert_itemlevel_long.parquet")
+
+dat_aiid_scales_long <- read_parquet("../../data/AIID/processed/data_processed_aiid_scales_itemlevel_long.parquet")
+
+dat <- dat_bainbridge |>
+  bind_rows(dat_aiid_scales_long) |>
+  bind_rows(dat_brysbaert_long)
+
+```
+
+# Completeness filter
+
+Drop each (participant, scale) record that answered fewer than 80% of the scale's items, applied uniformly across all datasets (see the companion analysis for the rationale).
+
+```{r}
+
+min_completeness <- 0.80
+
+scale_n_items <- dat |>
+  count(id, scale, source, name = "n_answered") |>
+  group_by(scale, source) |>
+  summarize(n_items = median(n_answered), .groups = "drop")
+
+complete_records <- dat |>
+  count(id, scale, source, name = "n_answered") |>
+  left_join(scale_n_items, by = c("scale", "source")) |>
+  filter(n_answered >= min_completeness * n_items) |>
+  select(id, scale, source)
+
+dat <- dat |>
+  semi_join(complete_records, by = c("id", "scale", "source"))
+
+```
+
+# Single-factor CFA loadings
+
+For each (scale, source) we fit a single-factor CFA (lavaan, ML, `std.lv = TRUE`) and extract the standardized loadings, exactly as in the companion analysis, with one deliberate difference: residual item-level missingness (left by the 80% gate) is handled by **listwise deletion** rather than FIML. FIML (`missing = "ml"`) triggers a hard segfault inside lavaan's EM covariance-inverse step on a couple of the larger, near-collinear datasets; listwise uses the same estimator and, after the 80% completeness gate, discards little data. A single-factor model needs >= 3 items, so 1-2 item scales return no loadings; the global factor sign is reflected so that "negative loading" always means "item opposes the scale's majority direction". Alongside the loadings, each scale's item count (`n_items`) and raw Cronbach's alpha (`alpha`, computed on the same item matrix) are recorded and summarised below.
+
+```{r}
+
+# Cronbach's alpha on the item matrix. Items are already correctly keyed
+# upstream, so check.keys = FALSE gives plain (raw) alpha for the scale as
+# scored. NA for < 2 items or on estimation failure.
+calc_alpha <- function(w) {
+  if (ncol(w) < 2) return(NA_real_)
+  fit <- tryCatch(
+    suppressWarnings(psych::alpha(as.data.frame(w), check.keys = FALSE,
+                                  warnings = FALSE)),
+    error = function(e) NULL)
+  if (is.null(fit)) NA_real_ else fit$total$raw_alpha
+}
+
+fit_cfa <- function(df) {
+  w <- df |>
+    dplyr::select(id, item, response) |>
+    tidyr::pivot_wider(names_from = item, values_from = response,
+                       values_fn = function(x) x[1]) |>
+    dplyr::select(-id)
+
+  item_names <- colnames(w)
+  alpha_val  <- calc_alpha(w)
+  empty <- tibble(n_obs = NA_integer_, n_items = ncol(w), alpha = alpha_val,
+                  loadings = list(tibble(item = character(), loading = numeric())))
+
+  if (ncol(w) < 3) return(empty)
+
+  colnames(w) <- paste0("i", seq_along(item_names))
+  model <- paste("f =~", paste(colnames(w), collapse = " + "))
+
+  fit <- tryCatch(
+    suppressWarnings(lavaan::cfa(model, data = as.data.frame(w),
+                                 std.lv = TRUE, estimator = "ML",
+                                 missing = "listwise")),
+    error = function(e) NULL)
+  if (is.null(fit) || !lavaan::lavInspect(fit, "converged")) return(empty)
+
+  std <- tryCatch(
+    lavaan::standardizedSolution(fit) |>
+      dplyr::filter(op == "=~") |>
+      dplyr::pull(est.std),
+    error = function(e) NULL)
+  if (is.null(std) || !all(is.finite(std))) return(empty)
+
+  if (sum(std < 0) > sum(std > 0)) std <- -std
+
+  tibble(n_obs = lavaan::lavInspect(fit, "nobs"),
+         n_items = length(item_names),
+         alpha = alpha_val,
+         loadings = list(tibble(item = item_names, loading = std)))
+}
+
+cfa_loadings <- dat |>
+  group_by(scale, source) |>
+  group_modify(~ fit_cfa(.x)) |>
+  ungroup()
+
+cfa_loadings_long <- cfa_loadings |>
+  dplyr::select(scale, source, loadings) |>
+  tidyr::unnest(loadings) |>
+  filter(is.finite(loading))
+
+```
+
+## Per-scale item counts and reliability
+
+Distribution of the number of items and Cronbach's alpha across the
+`r sum(!is.na(cfa_loadings$n_obs))` scales that contribute loadings (min,
+percentiles, mean, SD, max).
+
+```{r}
+
+# min / percentiles / mean / sd / max summary of a numeric vector
+summarise_dist <- function(x) {
+  x <- x[is.finite(x)]
+  tibble(n      = length(x),
+         min    = min(x),
+         p10    = unname(quantile(x, 0.10)),
+         p25    = unname(quantile(x, 0.25)),
+         median = median(x),
+         mean   = mean(x),
+         sd     = sd(x),
+         p75    = unname(quantile(x, 0.75)),
+         p90    = unname(quantile(x, 0.90)),
+         max    = max(x))
+}
+
+scale_metrics <- cfa_loadings |> filter(!is.na(n_obs))
+
+bind_rows(
+  summarise_dist(scale_metrics$n_items) |>
+    mutate(metric = "n_items per scale", .before = 1),
+  summarise_dist(scale_metrics$alpha) |>
+    mutate(metric = "Cronbach's alpha per scale", .before = 1)
+) |>
+  mutate(across(where(is.numeric), ~ round(.x, 3))) |>
+  kable(caption = paste("Per-scale item counts and Cronbach's alpha across the",
+                        "scales contributing loadings.")) |>
+  kable_classic(full_width = FALSE)
+
+```
+
+```{r}
+
+# n items per scale (right-skewed 3-90, so log10 x-axis)
+ggplot(scale_metrics, aes(n_items)) +
+  geom_histogram(bins = 30, fill = "grey80", colour = "white") +
+  scale_x_log10(breaks = c(3, 5, 10, 20, 30, 50, 90)) +
+  labs(x = "Items per scale (log scale)", y = "N scales") +
+  theme_linedraw()
+
+# Cronbach's alpha per scale
+ggplot(scale_metrics, aes(alpha)) +
+  geom_histogram(binwidth = 0.02, boundary = 0, fill = "grey80", colour = "white") +
+  geom_vline(xintercept = 0.70, linetype = "dashed", colour = "red") +
+  labs(x = "Cronbach's alpha per scale", y = "N scales",
+       caption = "Dashed line = conventional 0.70 threshold.") +
+  coord_cartesian(xlim = c(0.5, 1)) +
+  theme_linedraw()
+
+```
+
+# Estimation base: scales and participants
+
+The loadings summarised below are not drawn from one big pooled model; each is a standardized loading from a separate single-factor CFA fitted to one (scale, source) dataset. This section describes how many scales and participants sit behind them. `n_obs` is the number of participants each CFA actually used — the listwise complete-case count after the 80% completeness gate (lavaan's `nobs`); it varies widely because the contributing samples do.
+
+```{r}
+
+# converged datasets carry a non-missing n_obs; label by originating dataset
+scale_base <- cfa_loadings |>
+  filter(!is.na(n_obs)) |>
+  mutate(dataset = dplyr::case_when(source == "Bainbridge" ~ "Bainbridge",
+                                    source == "AIID"       ~ "AIID",
+                                    TRUE                    ~ "Brysbaert"))
+
+# participants contributing to at least one converged scale, by dataset
+participants_by_dataset <- dat |>
+  semi_join(distinct(scale_base, scale, source), by = c("scale", "source")) |>
+  mutate(dataset = dplyr::case_when(source == "Bainbridge" ~ "Bainbridge",
+                                    source == "AIID"       ~ "AIID",
+                                    TRUE                    ~ "Brysbaert")) |>
+  group_by(dataset) |>
+  summarize(participants = n_distinct(id), .groups = "drop")
+
+n_participants_total <- dat |>
+  semi_join(distinct(scale_base, scale, source), by = c("scale", "source")) |>
+  distinct(id) |>
+  nrow()
+
+```
+
+Overall:
+
+```{r}
+
+tibble(
+  n_scales               = nrow(scale_base),
+  n_loadings             = nrow(cfa_loadings_long),
+  n_participants_distinct = n_participants_total,
+  items_min              = min(scale_base$n_items),
+  items_median           = median(scale_base$n_items),
+  items_max              = max(scale_base$n_items),
+  N_per_scale_min        = min(scale_base$n_obs),
+  N_per_scale_median     = median(scale_base$n_obs),
+  N_per_scale_max        = max(scale_base$n_obs)
+) |>
+  kable(caption = "Scales, loadings, and participants behind the loading distribution.") |>
+  kable_classic(full_width = FALSE)
+
+```
+
+By originating dataset:
+
+```{r}
+
+scale_base |>
+  group_by(dataset) |>
+  summarize(n_scales    = n(),
+            n_loadings  = sum(n_items),
+            N_min       = min(n_obs),
+            N_median    = median(n_obs),
+            N_max       = max(n_obs),
+            .groups = "drop") |>
+  left_join(participants_by_dataset, by = "dataset") |>
+  dplyr::select(dataset, n_scales, n_loadings, participants,
+                N_min, N_median, N_max) |>
+  kable(caption = paste("Per-CFA participant N (n_obs) is the listwise",
+                        "complete-case count; 'participants' is the distinct",
+                        "ids contributing to that dataset's scales.")) |>
+  kable_classic(full_width = FALSE)
+
+```
+
+Per-scale sample sizes span `r format(min(scale_base$n_obs), big.mark = ",")` to `r format(max(scale_base$n_obs), big.mark = ",")` participants (median `r format(median(scale_base$n_obs), big.mark = ",")`), across `r nrow(scale_base)` scales from `r n_participants_total` distinct participants. Item counts per scale range from `r min(scale_base$n_items)` to `r max(scale_base$n_items)` (median `r median(scale_base$n_items)`). Because loadings come from many independent scales of unequal size, the pooled distribution below is an unweighted pool of item loadings — each item counts once regardless of its scale's N — which is the right target for a DGP that draws items, not scales.
+
+```{r}
+
+ggplot(scale_base, aes(n_obs)) +
+  geom_histogram(bins = 40, fill = "grey80", colour = "white") +
+  scale_x_log10(labels = scales::comma) +
+  labs(x = "Participants per scale (n_obs, log scale)", y = "N scales") +
+  theme_linedraw()
+
+```
+
+# Empirical distribution of loadings
+
+```{r}
+
+lambda_raw <- cfa_loadings_long$loading
+
+# Standardized loadings are logically in [-1, 1]; clamp any Heywood cases just
+# inside the open interval so atanh() and the Beta rescale are defined.
+eps <- 1e-3
+n_clamped <- sum(abs(lambda_raw) >= 1 - eps)
+lambda <- pmin(pmax(lambda_raw, -(1 - eps)), 1 - eps)
+n_load <- length(lambda)
+
+tibble(
+  n_loadings   = n_load,
+  n_scales     = nrow(distinct(cfa_loadings_long, scale, source)),
+  n_clamped    = n_clamped,
+  mean         = mean(lambda),
+  sd           = sd(lambda),
+  skew         = moments::skewness(lambda),
+  ex_kurtosis  = moments::kurtosis(lambda) - 3,
+  min          = min(lambda),
+  max          = max(lambda),
+  prop_negative = mean(lambda < 0)
+) |>
+  mutate(across(where(is.numeric), ~ round(.x, 3))) |>
+  kable() |>
+  kable_classic(full_width = FALSE)
+
+ggplot(tibble(lambda), aes(lambda)) +
+  geom_histogram(aes(y = after_stat(density)), binwidth = 0.05,
+                 boundary = 0, fill = "grey80", colour = "white") +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "red") +
+  labs(x = "Standardized single-factor loading", y = "Density") +
+  coord_cartesian(xlim = c(-1, 1)) +
+  theme_linedraw()
+
+```
+
+The pooled loadings are bounded, unimodal, concentrated around ~0.5, and left-skewed with a short tail into negative values. A good single distribution must reproduce the location, the spread, that left skew, and the small negative-tail mass.
+
+# Candidate single-distribution models
+
+We fit six single distributions by maximum likelihood. Three act directly on the loading scale (`normal`, `skew-normal`, `skew-t`); two act on the Fisher-z transform `z = atanh(lambda)` (unbounded, so a normal/skew-normal there maps back to a bounded, skewed shape on the loading scale); and the **scaled Beta** rescales loadings onto `[0, 1]` via `p = (lambda + 1) / 2` and fits `Beta(a, b)`.
+
+To compare models fitted on different scales fairly, every log-likelihood is expressed **on the loading scale**, adding the Jacobian of each transform:
+
+- Fisher-z models: `log f_lambda = log f_z(atanh(lambda)) - log(1 - lambda^2)`.
+- Scaled Beta: `log f_lambda = log dbeta((lambda+1)/2, a, b) + log(1/2)`.
+
+With all log-likelihoods on a common scale, AIC and BIC are comparable across the whole ladder. We also report the one-sample Kolmogorov-Smirnov distance between each fitted CDF and the empirical loadings, and the mean / SD / negative proportion implied by drawing from each fitted model.
+
+```{r}
+
+models <- list()
+
+## 1. Normal on raw loadings
+m_ <- mean(lambda); s_ <- sd(lambda)
+models$normal <- list(
+  k = 2, ll = sum(dnorm(lambda, m_, s_, log = TRUE)),
+  dens = function(x) dnorm(x, m_, s_),
+  cdf  = function(x) pnorm(x, m_, s_),
+  qf   = function(p) qnorm(p, m_, s_),
+  rng  = function(nn) rnorm(nn, m_, s_),
+  par  = sprintf("mean = %.3f, sd = %.3f", m_, s_))
+
+## 2. Skew-normal on raw loadings
+dp_sn <- coef(selm(lambda ~ 1), param.type = "DP")
+models$`skew-normal` <- list(
+  k = 3, ll = sum(dsn(lambda, dp = dp_sn, log = TRUE)),
+  dens = function(x) dsn(x, dp = dp_sn),
+  cdf  = function(x) psn(x, dp = dp_sn),
+  qf   = function(p) qsn(p, dp = dp_sn),
+  rng  = function(nn) as.numeric(rsn(nn, dp = dp_sn)),
+  par  = sprintf("xi = %.3f, omega = %.3f, alpha = %.3f",
+                 dp_sn[1], dp_sn[2], dp_sn[3]))
+
+## 3. Skew-t on raw loadings
+dp_st <- tryCatch(coef(selm(lambda ~ 1, family = "ST"), param.type = "DP"),
+                  error = function(e) NULL)
+if (!is.null(dp_st)) models$`skew-t` <- list(
+  k = 4, ll = sum(dst(lambda, dp = dp_st, log = TRUE)),
+  dens = function(x) dst(x, dp = dp_st),
+  cdf  = function(x) pst(x, dp = dp_st),
+  qf   = function(p) qst(p, dp = dp_st),
+  rng  = function(nn) as.numeric(rst(nn, dp = dp_st)),
+  par  = sprintf("xi = %.3f, omega = %.3f, alpha = %.3f, nu = %.0f",
+                 dp_st[1], dp_st[2], dp_st[3], dp_st[4]))
+
+## 4. Normal on Fisher-z  (Jacobian: -log(1 - lambda^2))
+z <- atanh(lambda); mz <- mean(z); sz <- sd(z)
+jac_z <- -log(1 - lambda^2)
+z_clamp <- function(x) atanh(pmin(pmax(x, -(1 - eps)), 1 - eps))
+models$`fisher-z normal` <- list(
+  k = 2, ll = sum(dnorm(z, mz, sz, log = TRUE) + jac_z),
+  dens = function(x) dnorm(atanh(x), mz, sz) / (1 - x^2),
+  cdf  = function(x) pnorm(z_clamp(x), mz, sz),
+  qf   = function(p) tanh(qnorm(p, mz, sz)),
+  rng  = function(nn) tanh(rnorm(nn, mz, sz)),
+  par  = sprintf("mean_z = %.3f, sd_z = %.3f", mz, sz))
+
+## 5. Skew-normal on Fisher-z
+dp_zsn <- coef(selm(z ~ 1), param.type = "DP")
+models$`fisher-z skew-normal` <- list(
+  k = 3, ll = sum(dsn(z, dp = dp_zsn, log = TRUE) + jac_z),
+  dens = function(x) dsn(atanh(x), dp = dp_zsn) / (1 - x^2),
+  cdf  = function(x) psn(z_clamp(x), dp = dp_zsn),
+  qf   = function(p) tanh(qsn(p, dp = dp_zsn)),
+  rng  = function(nn) tanh(as.numeric(rsn(nn, dp = dp_zsn))),
+  par  = sprintf("xi = %.3f, omega = %.3f, alpha = %.3f",
+                 dp_zsn[1], dp_zsn[2], dp_zsn[3]))
+
+## 6. Scaled Beta: p = (lambda + 1)/2 ~ Beta(a, b); Jacobian log(1/2)
+p_beta <- (lambda + 1) / 2
+nll_beta <- function(par) -sum(dbeta(p_beta, exp(par[1]), exp(par[2]), log = TRUE))
+mm <- mean(p_beta); vv <- var(p_beta); cc <- mm * (1 - mm) / vv - 1
+opt <- optim(log(c(mm * cc, (1 - mm) * cc)), nll_beta, method = "BFGS")
+a_beta <- exp(opt$par[1]); b_beta <- exp(opt$par[2])
+models$`scaled beta` <- list(
+  k = 2, ll = sum(dbeta(p_beta, a_beta, b_beta, log = TRUE) + log(0.5)),
+  dens = function(x) dbeta((x + 1) / 2, a_beta, b_beta) * 0.5,
+  cdf  = function(x) pbeta((x + 1) / 2, a_beta, b_beta),
+  qf   = function(p) 2 * qbeta(p, a_beta, b_beta) - 1,
+  rng  = function(nn) 2 * rbeta(nn, a_beta, b_beta) - 1,
+  par  = sprintf("shape1 = %.3f, shape2 = %.3f", a_beta, b_beta))
+
+```
+
+## Fit comparison
+
+```{r}
+
+set.seed(1)
+fit_tab <- purrr::imap_dfr(models, function(mo, nm) {
+  ks  <- suppressWarnings(ks.test(lambda, mo$cdf)$statistic)
+  sim <- mo$rng(200000)
+  tibble(model = nm, n_params = mo$k, logLik = mo$ll,
+         AIC = -2 * mo$ll + 2 * mo$k,
+         BIC = -2 * mo$ll + mo$k * log(n_load),
+         KS = unname(ks),
+         implied_mean = mean(sim), implied_sd = sd(sim),
+         implied_prop_neg = mean(sim < 0),
+         params = mo$par)
+}) |>
+  arrange(AIC) |>
+  mutate(dAIC = AIC - min(AIC), dBIC = BIC - min(BIC))
+
+fit_tab |>
+  dplyr::select(model, n_params, logLik, AIC, dAIC, BIC, dBIC, KS,
+                implied_mean, implied_sd, implied_prop_neg) |>
+  mutate(across(where(is.numeric), ~ round(.x, 3))) |>
+  kable(caption = paste0("Single-distribution fits to ", n_load,
+    " loadings, all on the loading scale. Empirical: mean = ",
+    round(mean(lambda), 3), ", sd = ", round(sd(lambda), 3),
+    ", prop negative = ", round(mean(lambda < 0), 3), ".")) |>
+  kable_classic(full_width = FALSE)
+
+fit_tab |>
+  dplyr::select(model, params) |>
+  kable(caption = "Fitted parameters.") |>
+  kable_classic(full_width = FALSE)
+
+```
+
+## Fitted densities overlaid
+
+```{r}
+
+grid <- seq(-0.999, 0.999, length.out = 400)
+dens_df <- purrr::imap_dfr(models, function(mo, nm)
+  tibble(model = nm, x = grid, density = mo$dens(grid)))
+
+ggplot() +
+  geom_histogram(data = tibble(lambda), aes(lambda, y = after_stat(density)),
+                 binwidth = 0.05, boundary = 0, fill = "grey85", colour = "white") +
+  geom_line(data = dens_df, aes(x, density, colour = model), linewidth = 0.7) +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "grey40") +
+  coord_cartesian(xlim = c(-1, 1)) +
+  labs(x = "Standardized loading", y = "Density", colour = NULL) +
+  theme_linedraw() +
+  theme(legend.position = "bottom")
+
+# facetted, ordered best-AIC first, for a cleaner per-model read
+dens_df |>
+  mutate(model = factor(model, levels = fit_tab$model)) |>
+  ggplot(aes(x, density)) +
+  geom_histogram(data = tidyr::crossing(model = factor(fit_tab$model,
+                                                       levels = fit_tab$model),
+                                        tibble(lambda)),
+                 aes(lambda, y = after_stat(density)),
+                 binwidth = 0.05, boundary = 0, fill = "grey85",
+                 colour = "white", inherit.aes = FALSE) +
+  geom_line(colour = "firebrick", linewidth = 0.7) +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "grey40") +
+  facet_wrap(~ model) +
+  coord_cartesian(xlim = c(-1, 1)) +
+  labs(x = "Standardized loading", y = "Density") +
+  theme_linedraw()
+
+```
+
+## Quantile fidelity
+
+```{r}
+
+qs <- c(.01, .05, .10, .25, .50, .75, .90, .95, .99)
+q_tab <- tibble(quantile = qs, empirical = quantile(lambda, qs))
+for (nm in fit_tab$model) q_tab[[nm]] <- models[[nm]]$qf(qs)
+
+q_tab |>
+  mutate(across(where(is.numeric), ~ round(.x, 2))) |>
+  kable(caption = "Model quantiles vs empirical quantiles (loading scale).") |>
+  kable_classic(full_width = FALSE)
+
+```
+
+## QQ plot for the best model
+
+```{r fig.height=5, fig.width=5}
+
+best_model <- fit_tab$model[1]
+pp <- ppoints(n_load)
+
+tibble(theoretical = models[[best_model]]$qf(pp),
+       empirical   = quantile(lambda, pp)) |>
+  ggplot(aes(theoretical, empirical)) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", colour = "red") +
+  geom_point(alpha = 0.4, size = 0.7) +
+  coord_equal() +
+  labs(x = paste0("Theoretical quantile (", best_model, ")"),
+       y = "Empirical loading quantile",
+       title = paste0("QQ: ", best_model)) +
+  theme_linedraw()
+
+```
+
+# Chosen model and simulation recipe
+
+```{r}
+
+best <- fit_tab |> slice(1)
+
+```
+
+The best single distribution by AIC/BIC is the **`r best$model`** (`r best$params`), a two-parameter model. It is not rejected by the Kolmogorov-Smirnov distance (KS = `r sprintf("%.3f", best$KS)`, versus an approximate 0.05 critical value of `r sprintf("%.3f", 1.36 / sqrt(n_load))` at this sample size) and it reproduces the empirical mean (`r sprintf("%.2f", best$implied_mean)` vs `r sprintf("%.2f", mean(lambda))`), SD (`r sprintf("%.2f", best$implied_sd)` vs `r sprintf("%.2f", sd(lambda))`), left skew, and negative-tail mass (`r sprintf("%.3f", best$implied_prop_neg)` vs `r sprintf("%.3f", mean(lambda < 0))`).
+
+Because its support is exactly the `[-1, 1]` logical range of a standardized loading, every draw is a valid loading — no truncation or rejection needed. The 3-4 parameter skew-normal / skew-t fit marginally closer in raw KS but are not preferred once their extra parameters are penalised (higher AIC and BIC), and the skew-t's degrees of freedom diverge, i.e. no heavy tails are needed. The plain normal is decisively rejected: it cannot represent the left skew.
+
+## The reusable data-generating function
+
+Following the tidy DGP style of `simulation_template_estimation.qmd`'s `generate_data()` — named arguments in, a tibble built and `return()`ed — the generator below draws one scale's worth of item loadings. Call it with `n_items` to get a tibble of `item` and `loading`.
+
+The model has just two parameters: the Beta shape parameters of the rescaled loading `p = (loading + 1) / 2 ~ Beta(shape1, shape2)`, with the loading recovered as `loading = 2 * p - 1`. Fitted to the Granary trait corpus these are **shape1 (α) = `r sprintf("%.2f", a_beta)`** and **shape2 (β) = `r sprintf("%.2f", b_beta)`**, and the function's defaults are set to these values so it is self-contained and copy-pasteable. What the two numbers encode:
+
+- **Location.** The Beta mean is `α / (α + β)` = `r sprintf("%.3f", a_beta / (a_beta + b_beta))` on `[0, 1]`, i.e. an expected loading of `2·mean − 1` = `r sprintf("%.3f", 2 * a_beta / (a_beta + b_beta) - 1)` on `[-1, 1]`.
+- **Shape and skew.** Both shapes exceed 1, so the density is unimodal with an *interior* mode (no spike at a boundary). Because `β < α` the mode sits in the upper half — loading mode `2·(α−1)/(α+β−2) − 1` = `r sprintf("%.3f", 2 * (a_beta - 1) / (a_beta + b_beta - 2) - 1)` — and the longer tail runs toward the lower end, reproducing the left skew and the small negative tail (`P(loading < 0) = P(Beta < 0.5)` = `r sprintf("%.3f", pbeta(0.5, a_beta, b_beta))`).
+- **Spread and concentration.** The concentration `α + β` = `r sprintf("%.1f", a_beta + b_beta)` governs the spread; larger values pack loadings more tightly around the mean, smaller values spread them out.
+- **Support.** Beta lives on `[0, 1]`, so `2·Beta − 1` lives on `[-1, 1]`, the logical range of a standardized loading — every draw is admissible, with no truncation or rejection step.
+
+```{r}
+
+# Generate one scale's worth of standardized factor loadings from the fitted
+# scaled Beta model: loading = 2 * Beta(shape1, shape2) - 1.
+#   n_items  number of item loadings to draw
+#   shape1   Beta alpha on the rescaled loading p = (loading + 1)/2
+#            (default 11.78, fitted to the Granary trait corpus)
+#   shape2   Beta beta on p (default 3.84, fitted to the Granary trait corpus)
+generate_loadings <- function(n_items,
+                              shape1 = 11.78,
+                              shape2 = 3.84) {
+
+  loadings <-
+    tibble(item    = seq_len(n_items),
+           loading = 2 * rbeta(n = n_items, shape1 = shape1, shape2 = shape2) - 1)
+
+  return(loadings)
+}
+
+```
+
+Sanity check: simulate a large number of loadings from the defaults and compare their summary to the empirical loadings.
+
+```{r}
+
+set.seed(2026)
+sim <- generate_loadings(n_items = 200000)
+
+tibble(
+  quantity  = c("mean", "sd", "skew", "prop_negative",
+                "q05", "q50", "q95"),
+  simulated = c(mean(sim$loading), sd(sim$loading),
+                moments::skewness(sim$loading), mean(sim$loading < 0),
+                quantile(sim$loading, .05), quantile(sim$loading, .50),
+                quantile(sim$loading, .95)),
+  empirical = c(mean(lambda), sd(lambda), moments::skewness(lambda),
+                mean(lambda < 0),
+                quantile(lambda, .05), quantile(lambda, .50),
+                quantile(lambda, .95))
+) |>
+  mutate(across(where(is.numeric), ~ round(.x, 3))) |>
+  kable() |>
+  kable_classic(full_width = FALSE)
+
+```
+
+## Predicted quantities
+
+```{r}
+
+pred <- tibble(
+  quantity = c("expected loading",
+               "5th percentile loading",
+               "50th percentile (median) loading",
+               "95th percentile loading",
+               "central 90% interval",
+               "P(loading < 0)"),
+  value = c(sprintf("%.3f", mean(sim$loading)),
+            sprintf("%.3f", models[[best_model]]$qf(0.05)),
+            sprintf("%.3f", models[[best_model]]$qf(0.50)),
+            sprintf("%.3f", models[[best_model]]$qf(0.95)),
+            sprintf("[%.3f, %.3f]", models[[best_model]]$qf(0.05),
+                    models[[best_model]]$qf(0.95)),
+            sprintf("%.3f", models[[best_model]]$cdf(0)))
+)
+
+pred |>
+  kable() |>
+  kable_classic(full_width = FALSE)
+
+```
+
+# Implied scale reliability (Cronbach's alpha)
+
+Because the DGP specifies the distribution of standardized loadings, it also
+implies a distribution of Cronbach's alpha for any given number of items — with
+no extra assumptions beyond the single-factor measurement model the loadings
+come from. This lets a simulation set a target reliability by choosing the number
+of items, or check that a chosen `n_items` yields realistic alphas.
+
+## Derivation
+
+Under a standardized single-factor model, item $i$ has unit variance and loads
+$\lambda_i$ on the common factor, so $\operatorname{Cov}(i,j) = \lambda_i\lambda_j$
+for $i \neq j$. For a $k$-item unit-weighted sum score,
+
+$$\operatorname{Var}\!\left(\textstyle\sum_i Y_i\right) \;=\; k \;+\; S_1^2 - S_2,
+\qquad S_1 = \sum_i \lambda_i,\quad S_2 = \sum_i \lambda_i^2,$$
+
+and coefficient alpha is
+
+$$\alpha \;=\; \frac{k}{k-1}\left(1 - \frac{k}{k + S_1^2 - S_2}\right)
+\;=\; \frac{k}{k-1}\cdot\frac{S_1^2 - S_2}{\,k + S_1^2 - S_2\,}.$$
+
+Drawing the $k$ loadings i.i.d. from the fitted scaled Beta with mean
+$\mu = \mathbb{E}[\lambda]$, the expected off-diagonal covariance sum is
+$\mathbb{E}[S_1^2 - S_2] = k(k-1)\mu^2$ — the loading *variance* cancels — which
+gives the closed-form population alpha
+
+$$\alpha(k) \;=\; \frac{k\,\mu^2}{1 + (k-1)\,\mu^2},$$
+
+the classic Spearman-Brown form with mean inter-item correlation
+$\bar r = \mu^2$. Under the fitted scaled Beta the mean loading is
+$\mu = 2\cdot\tfrac{\alpha_\beta}{\alpha_\beta + \beta_\beta} - 1$.
+
+```{r}
+
+# mean loading and mean inter-item correlation implied by the fitted scaled Beta
+mu  <- 2 * a_beta / (a_beta + b_beta) - 1
+mu2 <- mu^2   # implied mean inter-item correlation r_bar
+
+# closed-form population alpha for k items
+alpha_closed_form <- function(k, r = mu2) k * r / (1 + (k - 1) * r)
+
+# exact model-implied alpha for a specific drawn loading vector (keeps the
+# loading heterogeneity that the closed form averages over)
+alpha_from_loadings <- function(lambda) {
+  k <- length(lambda); S1 <- sum(lambda); S2 <- sum(lambda^2)
+  (k / (k - 1)) * ((S1^2 - S2) / (k + S1^2 - S2))
+}
+
+```
+
+The mean loading is `r sprintf("%.3f", mu)`, so the implied mean inter-item
+correlation is $\bar r = \mu^2 =$ `r sprintf("%.3f", mu2)`.
+
+## Implied alpha at the observed item-count percentiles
+
+For each percentile of the observed per-scale item count, the table gives the
+closed-form alpha and a Monte-Carlo alpha (mean and central 90% interval over
+20,000 simulated scales drawn from `generate_loadings()`, which — unlike the
+closed form — retains the item-to-item loading heterogeneity within a scale).
+
+```{r}
+
+set.seed(2027)
+
+pctls       <- c(0, 0.10, 0.25, 0.50, 0.75, 0.90, 1)
+pctl_labels <- c("min", "p10", "p25", "median", "p75", "p90", "max")
+k_grid      <- as.integer(round(quantile(scale_metrics$n_items, pctls)))
+
+implied_alpha <- purrr::pmap_dfr(
+  list(pctl_labels, k_grid),
+  function(lab, k) {
+    sims <- replicate(20000, alpha_from_loadings(generate_loadings(k)$loading))
+    tibble(percentile        = lab,
+           n_items           = k,
+           alpha_closed_form = alpha_closed_form(k),
+           alpha_mc_mean     = mean(sims),
+           alpha_mc_q05      = unname(quantile(sims, 0.05)),
+           alpha_mc_q95      = unname(quantile(sims, 0.95)))
+  })
+
+implied_alpha |>
+  mutate(across(where(is.numeric), ~ round(.x, 3))) |>
+  kable(caption = paste("Cronbach's alpha implied by the loading DGP at the",
+                        "observed per-scale item-count percentiles.")) |>
+  kable_classic(full_width = FALSE)
+
+```
+
+## Implied vs observed
+
+The curve is the closed-form $\alpha(k)$; the band is the DGP's central 90%
+interval (Monte Carlo); the points are the observed per-scale alphas. The DGP
+tracks the observed alphas through the mid-range of item counts, but the
+marginal, i.i.d.-item model **under-predicts** reliability for the shortest
+scales and slightly **over-predicts** it for the longest ones. Both gaps reflect
+the scale-level structure this single-distribution model deliberately omits:
+short scales used in practice are curated so their few items cohere (higher
+loadings than a random marginal draw), whereas the longest instruments are the
+multidimensional ones that carry the low and stray loadings — the very structure
+captured by the hierarchical mixture DGP in
+`analysis_item_correlations_factor_loadings.Rmd`.
+
+```{r}
+
+k_seq <- seq(3, max(scale_metrics$n_items), length.out = 40) |> round() |> unique()
+
+alpha_band <- purrr::map_dfr(k_seq, function(k) {
+  sims <- replicate(3000, alpha_from_loadings(generate_loadings(k)$loading))
+  tibble(n_items = k,
+         mid = mean(sims),
+         lo  = unname(quantile(sims, 0.05)),
+         hi  = unname(quantile(sims, 0.95)))
+})
+
+ggplot() +
+  geom_ribbon(data = alpha_band, aes(n_items, ymin = lo, ymax = hi),
+              fill = "steelblue", alpha = 0.18) +
+  geom_line(data = tibble(n_items = k_seq, alpha = alpha_closed_form(k_seq)),
+            aes(n_items, alpha), colour = "steelblue", linewidth = 0.8) +
+  geom_point(data = scale_metrics, aes(n_items, alpha),
+             alpha = 0.4, size = 1) +
+  scale_x_log10(breaks = c(3, 5, 10, 20, 30, 50, 90)) +
+  coord_cartesian(ylim = c(0, 1)) +
+  labs(x = "Items per scale (log scale)",
+       y = "Cronbach's alpha",
+       caption = paste("Line = closed-form alpha(k). Band = DGP central 90%",
+                       "(Monte Carlo). Points = observed per-scale alpha.")) +
+  theme_linedraw()
+
+```
+
+# Summary
+
+The paragraph below is written from extracted variables (inline R), so it stays correct if the data or fit change; it can be copied into a simulation study's method section.
+
+Across `r n_load` standardized single-factor loadings from `r nrow(distinct(cfa_loadings_long, scale, source))` (scale, source) datasets, the loadings have mean `r sprintf("%.2f", mean(lambda))` (SD `r sprintf("%.2f", sd(lambda))`), are left-skewed (skew `r sprintf("%.2f", moments::skewness(lambda))`), and are negative `r sprintf("%.1f%%", 100 * mean(lambda < 0))` of the time. Comparing six single distributions on a common (loading) scale, the best-fitting parameterisation is a **scaled Beta**: rescale a loading to p = (loading + 1) / 2 and model p ~ Beta(`r sprintf("%.2f", a_beta)`, `r sprintf("%.2f", b_beta)`), i.e. loading = 2 &times; Beta(`r sprintf("%.2f", a_beta)`, `r sprintf("%.2f", b_beta)`) &minus; 1. This two-parameter model has the lowest AIC and BIC of all candidates (including 3-4 parameter skew-normal and skew-t alternatives), is not rejected by a Kolmogorov-Smirnov test (KS = `r sprintf("%.3f", best$KS)`), reproduces the empirical mean, SD, skew and negative-loading rate, and because its support is the [-1, 1] logical range of a standardized loading guarantees admissible draws. To simulate a scale of loadings, call `generate_loadings(n_items)` (defined above), which draws loading = 2 &times; rbeta(n_items, shape1 = `r sprintf("%.2f", a_beta)`, shape2 = `r sprintf("%.2f", b_beta)`) &minus; 1 with those fitted shapes as defaults. This single distribution intentionally omits between-scale clustering; when a simulation must reproduce scale-level structure (e.g. that negative loadings concentrate within particular multidimensional scales, or a tunable multidimensional-contamination severity), use the hierarchical mixture DGP in `analysis_item_correlations_factor_loadings.Rmd` instead.
+
+# Session info
+
+```{r}
+sessionInfo()
+```
+
+
