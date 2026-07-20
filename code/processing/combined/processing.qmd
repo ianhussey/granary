@@ -1,0 +1,399 @@
+---
+title: "Combined processing of the Granary dataset"
+author: "Ian Hussey"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+format:
+  html:
+    code-fold: true
+    toc: true
+    toc-location: left
+    theme: flatly
+---
+
+```{r, include=FALSE}
+knitr::opts_chunk$set(message = FALSE,
+                      warning = FALSE)
+```
+
+This file combines the item-level data from every attitudes and traits data source into a single long-format data frame, applies the completeness requirement, tags each record with its variable `type` (trait or attitude), and writes the result to `data/combined/processed/` as a parquet file.
+
+# Dependencies
+
+```{r}
+
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+library(arrow)
+library(psych)    # Cronbach's alpha, skew, kurtosis
+library(writexl)  # xlsx codebooks
+
+# Population (n-denominator) SD. Paired with the population Popoviciu /
+# Bhattacharyya-Davis max-SD bounds when forming pomp_sd_* ratios, so the ratio
+# is bounded by 1 even at small n; base R's sd() uses (n-1), which would inflate
+# the ratio by sqrt(n/(n-1)). Returns NA for < 2 observations.
+sd_pop <- function(x) {
+  x <- x[!is.na(x)]
+  n <- length(x)
+  if (n < 2) return(NA_real_)
+  sqrt(sum((x - mean(x))^2) / n)
+}
+
+```
+
+# Get data
+
+Each source is loaded, given a `type` column ("trait" or "attitude"), and harmonised to the shared long format (`id`, `source`, `scale`, `item`, `response`, `min_response`, `max_response`, plus `type` and, where available, `subscale`, `age`, `sex`). `id` is coerced to character throughout so the sources bind cleanly.
+
+## Traits
+
+```{r}
+
+dat_bainbridge <- read_csv("../../../data/bainbridge et al. 2022/processed/data_processed_bainbridge_itemlevel_long.csv") |>
+  mutate(id = as.character(id),
+         type = "trait")
+
+dat_brysbaert_long <- read_parquet("../../../data/brysbaert et al. 2024/processed/data_processed_brysbaert_itemlevel_long.parquet") |>
+  mutate(id = as.character(id),
+         type = "trait")
+
+dat_aiid_scales_long <- read_parquet("../../../data/AIID/processed/data_processed_aiid_scales_itemlevel_long.parquet") |>
+  mutate(id = as.character(id),
+         type = "trait")
+
+```
+
+## Attitudes
+
+```{r}
+
+dat_aiid_attitudes_long <- read_parquet("../../../data/AIID/processed/data_processed_aiid_attitudes_itemlevel_long.parquet") |>
+  mutate(id = as.character(id),
+         type = "attitude")
+
+dat_poopchoc <- read_csv("../../../data/not-so-simple-preferences/processed/data_processed_after_exclusions.csv") |>
+  mutate(min_response = 1,
+         max_response = 7) |> # not so simple preferences study (not bainbridge)
+  select(id = participant_id,
+         min_response,
+         max_response,
+         poop = classic_poop,
+         chocolate = classic_chocolate,
+         pedophile, love, murder, vacation, racist,
+         honest, dishonest,
+         girls_skirts, boys_skirts, cats_legs, fish_legs,
+         attention_check1_numeric,
+         attention_check2_numeric) |>
+  mutate(id = as.character(id)) |>
+  pivot_longer(cols = c(-id, -min_response, -max_response),
+               names_to = "scale",
+               values_to = "response") |>
+  mutate(source = scale,
+         type = "attitude")
+
+```
+
+## Combine
+
+```{r}
+
+dat <- bind_rows(dat_bainbridge,
+                 dat_brysbaert_long,
+                 dat_aiid_scales_long,
+                 dat_aiid_attitudes_long,
+                 dat_poopchoc)
+
+dat |>
+  count(type, source, name = "n_rows") |>
+  arrange(type, source) |>
+  kable() |>
+  kable_classic(full_width = FALSE)
+
+```
+
+# Completeness filter
+
+Drop each (participant, scale) record that answered fewer than 80% of the scale's items, applied uniformly across all datasets. Item-level missingness is stored as absent rows (NA responses are dropped upstream), so completeness is measured by counting answered items per id against the scale's item count (the median answered count = full-scale length). This stops sparse partial responses from distorting sum scores, SDs, and alpha. (The Brysbaert pipeline also applies the same 80% gate upstream via `MIN_ITEM_COMPLETENESS`; re-applying it here covers Bainbridge and AIID too.)
+
+```{r}
+
+min_completeness <- 0.80
+
+scale_n_items <- dat |>
+  count(id, scale, source, name = "n_answered") |>
+  group_by(scale, source) |>
+  summarize(n_items = median(n_answered), .groups = "drop")
+
+complete_records <- dat |>
+  count(id, scale, source, name = "n_answered") |>
+  left_join(scale_n_items, by = c("scale", "source")) |>
+  filter(n_answered >= min_completeness * n_items) |>
+  select(id, scale, source)
+
+n_before <- nrow(distinct(dat, id, scale, source))
+dat <- dat |>
+  semi_join(complete_records, by = c("id", "scale", "source"))
+
+tibble(records_before = n_before,
+       records_after  = nrow(complete_records),
+       dropped        = n_before - nrow(complete_records),
+       pct_dropped    = round(100 * (n_before - nrow(complete_records)) / n_before, 2)) |>
+  kable() |>
+  kable_classic(full_width = FALSE)
+
+```
+
+# Participant level summaries
+
+## Sum scores
+
+One row per (participant, scale, source). Each participant is scored as their
+*mean* answered item projected to the full scale length (`mean_response *
+n_items`), so partial responders (>= 80% of items, per the completeness filter)
+are projected to the full-scale total rather than under-counted by a raw sum.
+For complete responders this equals the raw sum. `n_items` is the median
+answered item count per (scale, source), reused from the completeness filter.
+
+```{r}
+
+dat_sumscores <- dat |>
+  group_by(id, scale, source, type, min_response, max_response) |>
+  summarize(mean_response = mean(response, na.rm = TRUE), .groups = "drop") |>
+  left_join(scale_n_items, by = c("scale", "source")) |>
+  mutate(sumscore = mean_response * n_items)
+
+```
+
+## POMP scores with Smithson-Verkuilen transformations
+
+`pomp_sumscore` rescales each participant's sum score to [0, 1] as a proportion
+of the scale's logical range (POMP: Percentage Of Maximum Possible).
+`pomp_sumscore_sk_transf` applies the Smithson-Verkuilen (2006) transformation
+`(y*(n-1) + 0.5)/n`, which nudges values off the exact 0/1 limits so the scores
+are admissible for downstream Beta-based modelling; `n` is the number of
+participants for that (scale, source).
+
+```{r}
+
+# POMP: proportion of the logical min-max sum-score range.
+calc_pomp <- function(x, min_possible_response, max_possible_response, n_items) {
+  (x - (min_possible_response * n_items)) /
+    ((max_possible_response * n_items) - (min_possible_response * n_items))
+}
+
+# Smithson-Verkuilen transformation: offsets values from the [0, 1] limits that
+# Beta regression cannot handle.
+calc_sk_transf <- function(y, n) {
+  (y * (n - 1) + 0.5) / n
+}
+
+dat_participantlevel <- dat_sumscores |>
+  mutate(pomp_sumscore = calc_pomp(sumscore,
+                                   min_possible_response = min_response,
+                                   max_possible_response = max_response,
+                                   n_items = n_items)) |>
+  group_by(scale, source) |>
+  mutate(n = n()) |>
+  ungroup() |>
+  mutate(pomp_sumscore_sk_transf = calc_sk_transf(pomp_sumscore, n))
+
+```
+
+# Scale level summaries
+
+Per (scale, source) descriptive statistics.
+
+## Cronbach's alpha
+
+Internal consistency per (scale, source), computed from the item-level long
+data. Brysbaert items are reverse-keyed upstream in processing and
+Bainbridge/AIID are already correctly keyed, so a plain alpha is meaningful;
+`check.keys = TRUE` is kept only as a safety net. Single-item attitude "scales"
+have < 2 items and get `alpha = NA`.
+
+```{r}
+
+calc_alpha <- function(df) {
+  w <- df |>
+    dplyr::select(id, item, response) |>
+    tidyr::pivot_wider(names_from = item, values_from = response,
+                       values_fn = function(x) x[1]) |>
+    dplyr::select(-id)
+  if (ncol(w) < 2) return(NA_real_)
+  fit <- tryCatch(
+    suppressWarnings(psych::alpha(as.data.frame(w), check.keys = TRUE,
+                                  warnings = FALSE)),
+    error = function(e) NULL)
+  if (is.null(fit)) NA_real_ else fit$total$raw_alpha
+}
+
+alphas <- dat |>
+  group_by(scale, source) |>
+  group_modify(~ tibble(alpha = calc_alpha(.x))) |>
+  ungroup()
+
+```
+
+## Descriptive statistics
+
+One row per (scale, source): sample size, alpha, the logical (theoretical) and
+empirical min/max of the sum score, its mean, SD, skew and kurtosis, and three
+SD-relative POMP metrics. `pomp_m` = (mean - logical min) / logical range.
+`pomp_sd` = SD / logical range. `pomp_sd_popoviciu` = SD / (range/2), the global
+Popoviciu max-SD bound. `pomp_sd_bd` = SD / sqrt((max - m)(m - min)), the local
+Bhattacharyya-Davis max-SD bound given the observed mean (the "proportion of BD
+max SD"). Population-form SD (`sd_pop`) is used in the POMP ratios so each is
+bounded by 1; the reportable Bessel-corrected `sd` is retained separately.
+
+```{r}
+
+dat_scalelevel <- dat_participantlevel |>
+  group_by(scale, source, type, n_items, min_response, max_response) |>
+  summarize(n             = n(),
+            m             = mean(sumscore),
+            sd            = sd(sumscore),       # Bessel-corrected; reportable
+            sd_pop        = sd_pop(sumscore),   # n-denominator; for POMP ratios
+            empirical_min = min(sumscore),
+            empirical_max = max(sumscore),
+            skew          = psych::skew(sumscore),
+            kurtosis      = psych::kurtosi(sumscore),
+            .groups = "drop") |>
+  left_join(alphas, by = c("scale", "source")) |>
+  mutate(logical_min = min_response * n_items,
+         logical_max = max_response * n_items,
+         max_range   = logical_max - logical_min,
+         # Local Bhattacharyya-Davis max-SD bound given the observed mean.
+         max_sd_bd   = sqrt((logical_max - m) * (m - logical_min)),
+         pomp_m            = (m - logical_min) / max_range,
+         pomp_sd           = sd_pop / max_range,
+         pomp_sd_popoviciu = sd_pop / (max_range / 2),
+         pomp_sd_bd        = sd_pop / max_sd_bd) |>
+  relocate(alpha, .after = type) |>
+  arrange(type, source, scale)
+
+dat_scalelevel |>
+  mutate(across(where(is.numeric), \(x) round(x, 3))) |>
+  kable() |>
+  kable_classic(full_width = FALSE)
+
+```
+
+# Save to disk
+
+Three parquet files are written: the item-level long data, the participant-level
+sum/POMP scores, and the scale-level descriptives.
+
+```{r}
+
+processed_dir <- "../../../data/combined/processed"
+dir.create(processed_dir, showWarnings = FALSE, recursive = TRUE)
+
+dat_itemlevel <- dat |>
+  relocate(id, source, scale, subscale, type, item, response,
+           min_response, max_response, age, sex)
+
+write_parquet(dat_itemlevel,
+              file.path(processed_dir, "data_processed_itemlevel.parquet"))
+write_parquet(dat_participantlevel,
+              file.path(processed_dir, "data_processed_participantlevel.parquet"))
+write_parquet(dat_scalelevel,
+              file.path(processed_dir, "data_processed_scalelevel.parquet"))
+
+```
+
+# Codebooks
+
+An xlsx codebook is written alongside each parquet file, listing every column
+with its class and a description. The descriptions are maintained in the named
+vectors below; `build_codebook()` fails loudly if a saved data frame contains a
+column with no description, so the codebooks cannot silently drift out of sync
+with the data.
+
+```{r}
+
+# Build a (variable, class, description) codebook for a data frame and write it
+# to xlsx. Errors if any column lacks a description, so codebooks stay in sync.
+build_codebook <- function(df, descriptions, path) {
+  missing <- setdiff(names(df), names(descriptions))
+  if (length(missing) > 0) {
+    stop("No codebook description for: ", paste(missing, collapse = ", "))
+  }
+  codebook <- tibble(
+    variable    = names(df),
+    class       = vapply(df, function(x) class(x)[1], character(1)),
+    description = unname(descriptions[names(df)])
+  )
+  write_xlsx(codebook, path)
+  codebook
+}
+
+descriptions_itemlevel <- c(
+  id           = "Participant identifier (character; unique within source).",
+  source       = "Dataset / contributing-sample label.",
+  scale        = "Scale name (or attitude-object name for single-item attitudes).",
+  subscale     = "Subscale within the scale, where defined (Bainbridge only; NA otherwise).",
+  type         = "Variable type: 'trait' or 'attitude'.",
+  item         = "Item number within the scale.",
+  response     = "Numeric item response (reverse-keyed items already recoded upstream).",
+  min_response = "Theoretical minimum of the item response scale.",
+  max_response = "Theoretical maximum of the item response scale.",
+  age          = "Participant age in years, where available (AIID only; NA otherwise).",
+  sex          = "Participant sex, where available (AIID only; NA otherwise)."
+)
+
+descriptions_participantlevel <- c(
+  id                      = "Participant identifier (character; unique within source).",
+  scale                   = "Scale name (or attitude-object name).",
+  source                  = "Dataset / contributing-sample label.",
+  type                    = "Variable type: 'trait' or 'attitude'.",
+  min_response            = "Theoretical minimum of the item response scale.",
+  max_response            = "Theoretical maximum of the item response scale.",
+  mean_response           = "Participant's mean answered item response for this scale.",
+  n_items                 = "Full-scale item count (median answered items per participant for this scale, source).",
+  sumscore                = "Mean-projected sum score: mean_response * n_items (= raw sum for complete responders).",
+  pomp_sumscore           = "Sum score rescaled to [0, 1] as a proportion of the scale's logical range (POMP).",
+  n                       = "Number of participants with a score for this (scale, source); used by the SK transform.",
+  pomp_sumscore_sk_transf = "Smithson-Verkuilen transform of pomp_sumscore: (y*(n-1) + 0.5)/n, offset off the 0/1 limits."
+)
+
+descriptions_scalelevel <- c(
+  scale             = "Scale name (or attitude-object name).",
+  source            = "Dataset / contributing-sample label.",
+  type              = "Variable type: 'trait' or 'attitude'.",
+  alpha             = "Cronbach's alpha (raw) for the scale; NA for single-item scales.",
+  n_items           = "Full-scale item count.",
+  min_response      = "Theoretical minimum of the item response scale.",
+  max_response      = "Theoretical maximum of the item response scale.",
+  n                 = "Number of participants contributing a sum score.",
+  m                 = "Mean sum score.",
+  sd                = "Standard deviation of the sum score (Bessel-corrected, n-1; reportable).",
+  sd_pop            = "Population SD of the sum score (n denominator); used in the POMP ratios.",
+  empirical_min     = "Observed minimum sum score.",
+  empirical_max     = "Observed maximum sum score.",
+  skew              = "Skewness of the sum score (psych::skew).",
+  kurtosis          = "Excess kurtosis of the sum score (psych::kurtosi).",
+  logical_min       = "Theoretical minimum possible sum score (min_response * n_items).",
+  logical_max       = "Theoretical maximum possible sum score (max_response * n_items).",
+  max_range         = "Logical sum-score range (logical_max - logical_min).",
+  max_sd_bd         = "Local Bhattacharyya-Davis max-SD bound given the mean: sqrt((logical_max - m)(m - logical_min)).",
+  pomp_m            = "POMP mean: (m - logical_min) / max_range.",
+  pomp_sd           = "SD / logical range (proportion of max range).",
+  pomp_sd_popoviciu = "SD / (range/2): proportion of the global Popoviciu max SD.",
+  pomp_sd_bd        = "SD / max_sd_bd: proportion of the local Bhattacharyya-Davis max SD."
+)
+
+build_codebook(dat_itemlevel, descriptions_itemlevel,
+               file.path(processed_dir, "codebook_itemlevel.xlsx"))
+build_codebook(dat_participantlevel, descriptions_participantlevel,
+               file.path(processed_dir, "codebook_participantlevel.xlsx"))
+build_codebook(dat_scalelevel, descriptions_scalelevel,
+               file.path(processed_dir, "codebook_scalelevel.xlsx"))
+
+```
+
+# Session info
+
+```{r}
+sessionInfo()
+```
+

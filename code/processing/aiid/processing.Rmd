@@ -1,0 +1,312 @@
+---
+title: "Process AIID data"
+author: "Ian Hussey"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  html_document:
+    code_folding: hide
+    highlight: haddock
+    theme: flatly
+    toc: yes
+    toc_float: yes
+---
+
+```{r, include=FALSE}
+knitr::opts_chunk$set(message = FALSE,
+                      warning = FALSE)
+```
+
+```{r}
+
+# dependencies
+library(tidyverse)
+library(scales)
+library(stringr)
+library(effectsize)
+library(janitor)
+library(knitr)
+library(kableExtra)
+library(arrow)
+
+```
+
+# Single items attitude scales - AIID
+
+```{r}
+
+load("../../../data/AIID/raw/AIID_subset_confirmatory.RData")
+
+dat_aiid_scales_long <- AIID_subset_confirmatory %>%
+  filter(english_fluency %in% c("English fluent - speak/read it regularly", "English is my primary language") & 
+           complete_self_report_data &
+           age >= 18 & 
+           age <= 65) |>
+  rename(bidrim_1 = bidr_im1, 
+         bidrim_2 = bidr_im2, 
+         bidrim_3 = bidr_im3, 
+         bidrim_4 = bidr_im4, 
+         bidrim_5 = bidr_im5, 
+         bidrim_6 = bidr_im6,
+         bidrim_7 = bidr_im7, 
+         bidrim_8 = bidr_im8, 
+         bidrim_9 = bidr_im9, 
+         bidrim_10 = bidr_im10, 
+         bidrim_11 = bidr_im11, 
+         bidrim_12 = bidr_im12, 
+         bidrim_13 = bidr_im13, 
+         bidrim_14 = bidr_im14, 
+         bidrim_15 = bidr_im15, 
+         bidrim_16 = bidr_im16, 
+         bidrim_17 = bidr_im17, 
+         bidrim_18 = bidr_im18, 
+         bidrsde_1 = bidr_sde1, 
+         bidrsde_2 = bidr_sde2, 
+         bidrsde_3 = bidr_sde3, 
+         bidrsde_4 = bidr_sde4, 
+         bidrsde_5 = bidr_sde5, 
+         bidrsde_6 = bidr_sde6, 
+         bidrsde_7 = bidr_sde7, 
+         bidrsde_8 = bidr_sde8, 
+         bidrsde_9 = bidr_sde9, 
+         bidrsde_10 = bidr_sde10, 
+         bidrsde_11 = bidr_sde11, 
+         bidrsde_12 = bidr_sde12, 
+         bidrsde_13 = bidr_sde13, 
+         bidrsde_14 = bidr_sde14,
+         bidrsde_15 = bidr_sde15, 
+         bidrsde_16 = bidr_sde16, 
+         bidrsde_17 = bidr_sde17, 
+         bidrsde_18 = bidr_sde18,
+         nfc_1 = nfc1, 
+         nfc_2 = nfc2, 
+         nfc_3 = nfc3,
+         nfc_4 = nfc4, 
+         nfc_5 = nfc5, 
+         nfc_6 = nfc6, 
+         nfc_7 = nfc7, 
+         nfc_8 = nfc8, 
+         nfc_9 = nfc9, 
+         nfc_10 = nfc10, 
+         nfc_11 = nfc11, 
+         nfc_12 = nfc12, 
+         nfc_13 = nfc13,
+         nfc_14 = nfc14, 
+         nfc_15 = nfc15, 
+         nfc_16 = nfc16, 
+         nfc_17 = nfc17, 
+         nfc_18 = nfc18,
+         # nfccp_1 = nfcc_p1, 
+         # nfccp_2 = nfcc_p2, 
+         # nfccp_3 = nfcc_p3, 
+         # nfccp_4 = nfcc_p4, 
+         # nfccp_5 = nfcc_p5, 
+         # nfccp_6 = nfcc_p6, 
+         # nfccp_7 = nfcc_p7, 
+         # nfccp_8 = nfcc_p8, 
+         # nfccd_1 = nfcc_d1, 
+         # nfccd_2 = nfcc_d2, 
+         # nfccd_3 = nfcc_d3, 
+         # nfccd_4 = nfcc_d4, 
+         # nfccd_5 = nfcc_d5, 
+         # nfccd_6 = nfcc_d6, 
+         # nfccd_7 = nfcc_d7,
+         # nfccc_1 = nfcc_c1, 
+         # nfccc_2 = nfcc_c2, 
+         # nfccc_3 = nfcc_c3, 
+         # nfccc_4 = nfcc_c4, 
+         # nfccc_5 = nfcc_c5, 
+         # nfccc_6 = nfcc_c6, 
+         # nfccc_7 = nfcc_c7, 
+         # nfccc_8 = nfcc_c8, 
+         # nfcca_1 = nfcc_a1, 
+         # nfcca_2 = nfcc_a2,
+         # nfcca_3 = nfcc_a3, 
+         # nfcca_4 = nfcc_a4, 
+         # nfcca_5 = nfcc_a5, 
+         # nfcca_6 = nfcc_a6, 
+         # nfcca_7 = nfcc_a7,
+         # nfcca_8 = nfcc_a8, 
+         # nfcca_9 = nfcc_a9, 
+         # nfcco_1 = nfcc_o1, 
+         # nfcco_2 = nfcc_o2, 
+         # nfcco_3 = nfcc_o3,
+         # nfcco_4 = nfcc_o4, 
+         # nfcco_5 = nfcc_o5, 
+         # nfcco_6 = nfcc_o6, 
+         # nfcco_7 = nfcc_o7, 
+         # nfcco_8 = nfcc_o8, 
+         # nfcco_9 = nfcc_o9, 
+         # nfcco_10 = nfcc_o10,
+         pe_1 = pe1,
+         pe_2 = pe2, 
+         pe_3 = pe3, 
+         pe_4 = pe4, 
+         pe_5 = pe5, 
+         pe_6 = pe6, 
+         pe_7 = pe7, 
+         pe_8 = pe8, 
+         pe_9 = pe9, 
+         pe_10 = pe10, 
+         pe_11 = pe11,
+         pns_1 = pns1,
+         pns_2 = pns2, 
+         pns_3 = pns3, 
+         pns_4 = pns4, 
+         pns_5 = pns5, 
+         pns_6 = pns6, 
+         pns_7 = pns7,
+         pns_8 = pns8, 
+         pns_9 = pns9, 
+         pns_10 = pns10, 
+         pns_11 = pns11, 
+         pns_12 = pns12, 
+         rse_1 = rse1, 
+         rse_2 = rse2, 
+         rse_3 = rse3, 
+         rse_4 = rse4, 
+         rse_5 = rse5, 
+         rse_6 = rse6, 
+         rse_7 = rse7, 
+         rse_8 = rse8, 
+         rse_9 = rse9, 
+         rse_10 = rse10, 
+         rwa_1 = rwa1, 
+         rwa_2 = rwa2,
+         rwa_3 = rwa3, 
+         rwa_4 = rwa4, 
+         rwa_5 = rwa5, 
+         rwa_6 = rwa6, 
+         rwa_7 = rwa7, 
+         rwa_8 = rwa8, 
+         rwa_9 = rwa9,
+         rwa_10 = rwa10, 
+         rwa_11 = rwa11, 
+         rwa_12 = rwa12, 
+         rwa_13 = rwa13, 
+         rwa_14 = rwa14, 
+         rwa_15 = rwa15, 
+         rwa_16 = rwa16, 
+         rwa_17 = rwa17, 
+         rwa_18 = rwa18, 
+         rwa_19 = rwa19, 
+         rwa_20 = rwa20, 
+         sm_1 = sm1, 
+         sm_2 = sm2, 
+         sm_3 = sm3, 
+         sm_4 = sm4, 
+         sm_5 = sm5, 
+         sm_6 = sm6, 
+         sm_7 = sm7, 
+         sm_8 = sm8, 
+         sm_9 = sm9, 
+         sm_10 = sm10, 
+         sm_11 = sm11, 
+         sm_12 = sm12, 
+         sm_13 = sm13, 
+         sm_14 = sm14, 
+         sm_15 = sm15, 
+         sm_16 = sm16, 
+         sm_17 = sm17, 
+         sm_18 = sm18, 
+         socic_1 = soc_ic1, 
+         socic_2 = soc_ic2, 
+         socic_3 = soc_ic3, 
+         socic_4 = soc_ic4, 
+         socic_5 = soc_ic5, 
+         socic_6 = soc_ic6, 
+         socic_7 = soc_ic7, 
+         socic_8 = soc_ic8, 
+         socic_9 = soc_ic9, 
+         socic_10 = soc_ic10, 
+         socpe_1 = soc_pe1, 
+         socpe_2 = soc_pe2, 
+         socpe_3 = soc_pe3, 
+         socpe_4 = soc_pe4, 
+         socpe_5 = soc_pe5, 
+         socpe_6 = soc_pe6, 
+         socpe_7 = soc_pe7, 
+         socpe_8 = soc_pe8, 
+         socpe_9 = soc_pe9, 
+         socpe_10 = soc_pe10) |>
+  dplyr::select(id = session_id, 
+                age, 
+                sex,
+                starts_with("bidrim_"),
+                starts_with("bidrsde_"),
+                starts_with("bjw_"),
+                starts_with("brs_"),
+                starts_with("he_"),
+                #starts_with("icat_"),
+                starts_with("nfc_"),
+                #starts_with("nfcc_"),
+                starts_with("pe_"),
+                starts_with("pns_"),
+                starts_with("rse_"),
+                starts_with("rwa_"),
+                starts_with("sm_"),
+                starts_with("socic_"),
+                starts_with("socpe_")) |>
+  select(-ends_with("_subscale")) |>
+  pivot_longer(cols = c(-id, -age, -sex),
+               names_to = "scale",
+               values_to = "response") |>
+  drop_na(response) |>
+  separate(scale, into = c("scale", "item"), sep = "_") |>
+  mutate(source = "AIID") |>
+  mutate(scale = case_when(scale == "bidrim" ~ "BIDR-IM desirable responding",
+                           scale == "bidrsde" ~ "BIDR-SDE desirable responding",
+                           scale == "bjw" ~ "BJW belief in a just world",
+                           scale == "brs" ~ "BRS bayesian racism",
+                           scale == "he" ~ "HE humanitarianism-egalitarianism",
+                           scale == "nfc" ~ "NFC need for cognition",
+                           #scale == "nfcc" ~ "NFCC need for cognitive closure",
+                           scale == "pe" ~ "PE protestant work ethic",
+                           scale == "pns" ~ "PNS need for structure",
+                           scale == "rse" ~ "RSE self-esteem",
+                           scale == "rwa" ~ "RWA authoritarianism",
+                           scale == "sm" ~ "SM social monitoring",
+                           scale == "socic" ~ "SOC-IC interpersonal efficacy",
+                           scale == "socpe" ~ "SOC-PE personal efficacy")) |>
+  mutate(id = as.character(id),
+         item = as.numeric(item)) |>
+  mutate(min_response = 1,
+         max_response = 6)
+
+write_parquet(dat_aiid_scales_long, "../../../data/AIID/processed/data_processed_aiid_scales_itemlevel_long.parquet")
+
+                
+  
+
+dat_aiid_attitudes_long <- AIID_subset_confirmatory %>%
+  filter(english_fluency %in% c("English fluent - speak/read it regularly", "English is my primary language") &
+           age >= 18 & 
+           age <= 65 &
+           !is.na(domain)) |>
+  dplyr::select(id = session_id, 
+                domain, 
+                age, 
+                sex, 
+                # self-report attitudes data
+                #prefer,
+                actual_x,
+                actual_y) |>
+  drop_na(actual_x, actual_y) |>
+  separate(col = domain, into = c("scale_x", "scale_y"), sep = " - ") |>
+  pivot_longer(
+    cols = c(scale_x, scale_y, actual_x, actual_y),
+    names_to = c(".value", "axis"),
+    names_pattern = "(scale|actual)_(x|y)"
+  ) |>
+  rename(response = actual) |>
+  select(-axis) |>
+  mutate(id = as.character(id),
+         item = 1) |>
+  mutate(min_response = 1,
+         max_response = 10) |>
+  mutate(source = "AIID")
+
+write_parquet(dat_aiid_attitudes_long, "../../../data/AIID/processed/data_processed_aiid_attitudes_itemlevel_long.parquet")
+
+```
+
+

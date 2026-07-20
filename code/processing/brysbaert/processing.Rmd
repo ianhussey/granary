@@ -1,0 +1,132 @@
+---
+title: "Process Brysbaert et al.'s (2024) data"
+author: "Ian Hussey"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  html_document:
+    code_folding: hide
+    highlight: haddock
+    theme: flatly
+    toc: yes
+    toc_float: yes
+---
+
+```{r, include=FALSE}
+knitr::opts_chunk$set(message=FALSE,
+                      warning=FALSE)
+```
+
+# Dependencies
+
+```{r}
+
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+
+```
+
+# Process
+
+```{r}
+
+library(tidyverse)
+
+source("extract_brysbaert_functions.R")
+
+out_dir <- file.path(dirname(base_dir), "processed")
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+write_csv(brysbaert_catalog, file.path(out_dir, "brysbaert_catalog.csv"))
+write_csv(brysbaert_load_log, file.path(out_dir, "brysbaert_load_log.csv"))
+write_csv(range_check, file.path(out_dir, "brysbaert_range_check.csv"))
+
+range_check
+brysbaert_load_log
+
+library(arrow)
+
+clean_sources <- brysbaert_load_log |>
+  dplyr::mutate(prop_excluded = dplyr::if_else(
+    is.na(n_total) | n_total == 0L, NA_real_, n_excluded / n_total
+  )) |>
+  dplyr::filter(ok, !is.na(prop_excluded), prop_excluded < 0.10) |>
+  dplyr::pull(source) |>
+  unique()
+
+arrow::write_parquet(
+  dplyr::filter(dat_brysbaert_sumscores, source %in% clean_sources),
+  file.path(out_dir, "data_processed_brysbaert_sumscores.parquet")
+)
+clean_sources_short <- vapply(clean_sources, clean_source, character(1), USE.NAMES = FALSE)
+arrow::write_parquet(
+  dplyr::filter(dat_brysbaert_long, source %in% clean_sources_short),
+  file.path(out_dir, "data_processed_brysbaert_itemlevel_long.parquet")
+)
+
+```
+
+# Validate
+
+```{r}
+
+dat_brysbaert_sumscores <- read_parquet(file.path(out_dir, "data_processed_brysbaert_sumscores.parquet"))
+dat_brysbaert_long      <- read_parquet(file.path(out_dir, "data_processed_brysbaert_itemlevel_long.parquet"))
+
+
+# dat_brysbaert_sumscores |>
+#   distinct(scale) |>
+#   dput()
+# 
+# dat_brysbaert_long |>
+#   distinct(scale) |>
+#   dput()
+
+dat_brysbaert_sumscores |>
+  count(scale)
+
+dat_brysbaert_long |>
+  count(scale) 
+
+head(dat_brysbaert_long)
+
+# temp <- dat_brysbaert_long |>
+#   slice_head(n = 10000) 
+
+
+dat_brysbaert_long |>
+  distinct(scale) |>
+  count(name = "n_scales")
+
+dat_brysbaert_long |>
+  distinct(id, scale) |>
+  count(scale, name = "n_participants")
+
+dat_brysbaert_long |>
+  group_by(scale, source) |>
+  summarize(min = min(response),
+            max = max(response)) 
+
+dat_brysbaert_long |>
+  group_by(scale, source) |>
+  summarize(n = n(),
+            min = min(response),
+            max = max(response)) |>
+  group_by(scale) |>
+  mutate(range_consistent = n_distinct(min) == 1 & n_distinct(max) == 1)
+
+dat_brysbaert_long |>
+  group_by(scale, source) |>
+  summarize(n = n(),
+            min = min(response),
+            max = max(response)) |>
+  group_by(scale) |>
+  mutate(range_consistent = n_distinct(min) == 1 & n_distinct(max) == 1) |>
+  filter(!range_consistent)
+
+```
+
+
+
+
+  
