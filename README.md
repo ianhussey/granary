@@ -27,36 +27,59 @@ The combined item-level dataset pools ~5.8 million item responses from ~264,900 
 
 ## Quick start
 
-The dataset ships as [Apache Parquet](https://parquet.apache.org/) files under `data/combined/processed/`. Load the level you need:
+The dataset ships as [Apache Parquet](https://parquet.apache.org/) files under `data/combined/processed/`. You can pull them straight from GitHub without cloning the repo — the raw base URL is:
 
-**R** (via [`arrow`](https://arrow.apache.org/docs/r/)):
+```
+https://raw.githubusercontent.com/ianhussey/granary/main/data/combined/processed/
+```
+
+**Download from the shell** (`curl`; swap in `data_processed_participantlevel.parquet` / `data_processed_scalelevel.parquet` for the other levels, or a `codebook_*.xlsx` for the column dictionaries):
+
+```sh
+BASE="https://raw.githubusercontent.com/ianhussey/granary/main/data/combined/processed"
+curl -L -O "$BASE/data_processed_itemlevel.parquet"
+curl -L -O "$BASE/data_processed_participantlevel.parquet"
+curl -L -O "$BASE/data_processed_scalelevel.parquet"
+```
+
+**R** — read directly from the URL (via [`arrow`](https://arrow.apache.org/docs/r/)); no local copy needed:
 
 ```r
 library(arrow)
+library(dplyr)
 
-items    <- read_parquet("data/combined/processed/data_processed_itemlevel.parquet")
-subjects <- read_parquet("data/combined/processed/data_processed_participantlevel.parquet")
-scales   <- read_parquet("data/combined/processed/data_processed_scalelevel.parquet")
+base <- "https://raw.githubusercontent.com/ianhussey/granary/main/data/combined/processed"
+
+read_granary <- function(file) {
+  tmp <- tempfile(fileext = ".parquet")
+  download.file(file.path(base, file), tmp, mode = "wb")
+  read_parquet(tmp)
+}
+
+items    <- read_granary("data_processed_itemlevel.parquet")
+subjects <- read_granary("data_processed_participantlevel.parquet")
+scales   <- read_granary("data_processed_scalelevel.parquet")
 
 # e.g. all trait scales with acceptable internal consistency
-library(dplyr)
 scales |> filter(type == "trait", alpha >= 0.70)
 ```
 
-**Python** (via [`pandas`](https://pandas.pydata.org/) + `pyarrow`):
+**Python** — `pandas.read_parquet()` reads an HTTPS URL directly (needs `pyarrow` + `fsspec`):
 
 ```python
 import pandas as pd
 
-items    = pd.read_parquet("data/combined/processed/data_processed_itemlevel.parquet")
-subjects = pd.read_parquet("data/combined/processed/data_processed_participantlevel.parquet")
-scales   = pd.read_parquet("data/combined/processed/data_processed_scalelevel.parquet")
+base = "https://raw.githubusercontent.com/ianhussey/granary/main/data/combined/processed"
+
+items    = pd.read_parquet(f"{base}/data_processed_itemlevel.parquet")
+subjects = pd.read_parquet(f"{base}/data_processed_participantlevel.parquet")
+scales   = pd.read_parquet(f"{base}/data_processed_scalelevel.parquet")
 
 # e.g. all trait scales with acceptable internal consistency
 scales[(scales["type"] == "trait") & (scales["alpha"] >= 0.70)]
 ```
 
-The item-level file is large (~5.8M rows); to avoid reading it all into memory, use `arrow::open_dataset()` in R or `pyarrow.parquet` with column/row-group filters in Python. 
+If you have cloned the repo instead, just point the readers at the local paths (`data/combined/processed/...`). The item-level file is large (~5.8M rows, ~11 MB); to avoid reading it all into memory, use `arrow::open_dataset()` in R or `pyarrow.parquet` with column/row-group filters in Python.
 
 ### Codebooks
 
@@ -228,7 +251,7 @@ If you use this compiled dataset, please **cite the original sources** for the d
 
 Suggested citation:
 
-Hussey, I. (2026). Granary: A very large item-level open dataset of psychological traits and attitudes.    
+Hussey, I. (2026). Granary: A very large item-level open dataset of psychological traits and attitudes. https://github.com/ianhussey/granary
 
 
 
