@@ -151,9 +151,9 @@ The item-level dataset uses the columns below. Not every source populates every 
 The participant- and scale-level files add a handful of measures used in the distributional analyses. Briefly:
 
 - **Sum score (mean-projected).** Each participant is scored as their *mean* answered item projected to the full scale length (`mean_response × n_items`). For complete responders this equals the raw sum; for partial responders (who must clear the completeness gate below) it projects the partial mean to the full-scale total rather than under-counting.
-- **POMP** (Percentage Of Maximum Possible). The sum score rescaled to `[0, 1]` as a proportion of the scale's logical range: `(score − logical_min) / (logical_max − logical_min)`.
-- **Smithson-Verkuilen transformation.** `(y·(n−1) + 0.5) / n`, which nudges POMP scores off the exact 0/1 limits so they are admissible for Beta-based modelling.
-- **POMP SD (Bhattacharyya-Davis).** The scale's SD expressed as a proportion of the *local* Bhattacharyya-Davis maximum SD given the observed mean, `SD / sqrt((max − m)(m − min))` — the tightest distribution-free ceiling on SD for a bounded scale at a given mean. Population-form SD is used in these ratios so each is bounded by 1; the reportable Bessel-corrected SD is retained separately.
+- **POMP mean** (Percentage Of Maximum Possible). The sum score rescaled to `[0, 1]` as a proportion of the scale's logical range: `(score − logical_min) / (logical_max − logical_min)`.
+- **Smithson-Verkuilen transformation.** `(y·(n−1) + 0.5) / n`, which nudges POMP mean scores off the exact 0/1 limits so they are admissible for Beta-based modelling.
+- **POMP SD (Bhatia-Davis, 2000).** The scale's SD expressed as a proportion of the local Bhatia-Davis (2000) maximum SD given the observed mean, `SD / sqrt((max − m)(m − min))` — the tightest distribution-free ceiling on SD for a bounded scale at a given mean. Population-form SD is used in these ratios so each is bounded by 1; the reportable Bessel-corrected SD is retained separately.
 
 
 
@@ -195,7 +195,7 @@ Key R dependencies: `tidyverse`, `arrow`, `psych`, `writexl` (combined step), pl
   - `aiid_attitudes` — single-target attitude ratings (~108,800 participants, 187 attitude objects, ~217,600 responses). Objects range across brands, people, social groups, and concepts (e.g. Apple, Astrology, African Americans, Atheism).
 - **Files:** `data/AIID/raw/AIID_subset_confirmatory.RData`; processed parquet files under `data/AIID/processed/`.
 - **Source:** https://osf.io/pcjwf
-- **Reference:** **Hussey, I.**, Nosek, B. et al. (2019). The Attitudes, Identities, and Individual Differences (AIID) dataset: A massively multivariate dataset of implicit and explicit measures. https://osf.io/pcjwf
+- **Reference:** Hussey, I., Nosek, B. et al. (2019). The Attitudes, Identities, and Individual Differences (AIID) dataset: A massively multivariate dataset of implicit and explicit measures. https://osf.io/pcjwf
 - **License:** CC0.
 
 
