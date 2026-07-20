@@ -1,5 +1,7 @@
 # Granary
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21454571.svg)](https://doi.org/10.5281/zenodo.21454571)
+
 Granary is a large store of *granular*, item-level psychological measurement data, both self-report trait scales and attitude ratings. pooled from several public datasets into one harmonised, cleaned, and analysis-ready collection. The name is a play on the two things it is: a big **gran**ary (store) of **gran**ular item responses.
 
 It exists to study the distributional properties of psychological measures — for example the ratio of a scale's maximum range to its observed standard deviation, and the plausibility bounds this places on standardised effect sizes — across a wide range of scales, samples, response formats, and construct types.
@@ -247,11 +249,11 @@ Key R dependencies: `tidyverse`, `arrow`, `psych`, `writexl` (combined step), pl
 
 ## Citing Granary
 
-If you use this compiled dataset, please **cite the original sources** for the data you use (see each source above) in addition to Granary itself. Because the combined dataset embeds Brysbaert et al. (2024) data, the compilation as a whole inherits its **CC BY-NC-SA 4.0** terms.
+If you use this compiled dataset, please cite the original sources for the data you use (see each source above) in addition to Granary itself. Because the combined dataset embeds Brysbaert et al. (2024) data, the compilation as a whole inherits its CC BY-NC-SA 4.0 terms.
 
 Suggested citation:
 
-Hussey, I. (2026). Granary: A very large item-level open dataset of psychological traits and attitudes. https://github.com/ianhussey/granary
+Hussey, I. (2026). Granary: A very large item-level open dataset of psychological traits and attitudes. https://github.com/ianhussey/granary doi: [10.5281/zenodo.21454571](https://doi.org/10.5281/zenodo.21454571)
 
 
 
