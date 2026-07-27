@@ -8,4 +8,4 @@
 
 - Removing the parameters from the published history required rewriting the repository's commit history, so all commit hashes have changed and the `v1.0.0` tag now points to a new hash. Existing clones and forks will not fast-forward — please re-clone rather than pull.
 - No data files, harmonisation code, or analysis outputs were altered. The datasets released as v1.0.0 are byte-for-byte identical in v1.0.1, and results reported against v1.0.0 remain reproducible.
-- The archived Zenodo deposit for v1.0.0 ([10.5281/zenodo.21454571](https://doi.org/10.5281/zenodo.21454571)) is immutable and still contains the original links.
+- Only the GitHub repository was rewritten. The Zenodo deposit archiving v1.0.0 is immutable, so the copy preserved there still contains the original links.
