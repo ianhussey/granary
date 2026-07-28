@@ -1,5 +1,5 @@
 cff-version: 1.2.0
-title: "Granary: A very large item-level open dataset of psychological traits and attitudes"
+title: "granary: A very large item-level open dataset of psychological traits and attitudes"
 message: >-
   If you use this compiled dataset, please cite it as below, and also cite the
   original sources for the data you use (listed per source in the README).
