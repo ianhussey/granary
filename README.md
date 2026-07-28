@@ -253,7 +253,7 @@ If you use this compiled dataset, please cite the original sources for the data 
 
 Suggested citation:
 
-Hussey, I. (2026). Granary: A very large item-level open dataset of psychological traits and attitudes. https://github.com/ianhussey/granary doi: [10.5281/zenodo.21454571](https://doi.org/10.5281/zenodo.21454571)
+Hussey, I. (2026). granary: A very large item-level open dataset of psychological traits and attitudes. https://github.com/ianhussey/granary doi: [10.5281/zenodo.21454571](https://doi.org/10.5281/zenodo.21454571)
 
 
 
